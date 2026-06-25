@@ -1,0 +1,21 @@
+[package]
+name = "ecs"
+version = "0.1.0"
+edition = "2024"
+description = "A simple, binary-compatible Entity Component System (C ABI)"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+name = "ecs"
+path = "src/lib.rs"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "sparse_bench"
+harness = false
+
+[dependencies]
+crossbeam-queue = "0.3"
+smallvec = "1.15.2"

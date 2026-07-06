@@ -41,8 +41,6 @@ impl<T: Copy, D: SparseDefault<T>> SparseArray<T, D> {
         Self { pages: Vec::new(), _marker: PhantomData }
     }
 
-
-
     /// 读取 `index` 处的值。页面不存在返回 `D::SPARSE_VALUE`。
     #[inline]
     pub fn get(&self, index: usize) -> T {
@@ -153,7 +151,7 @@ impl<K: Id, V> SparseSet<K, V> {
 
     /// 检查 key 是否存在。
     #[inline]
-    pub fn contains(&self, key: &K) -> bool {
+    pub fn contains_key(&self, key: &K) -> bool {
         let key = *key;
         let idx = key.get_id().as_usize();
         let d = self.sparse.get(idx);

@@ -80,7 +80,7 @@ fn bench_get_miss(c: &mut Criterion) {
             b.iter(|| {
                 let mut hits = 0;
                 for i in size..size * 2 {
-                    if sparse.contains(&i) { hits += 1; }
+                    if sparse.contains_key(&i) { hits += 1; }
                 }
                 black_box(hits);
             });

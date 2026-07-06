@@ -1,8 +1,14 @@
-use crate::id::Id;
-use crate::{Entity, component::{self, ComponentId, ComponentTypeInfo, get_component_type_info}, sparse::SparseSet};
-use std::collections::{HashMap, HashSet};
+use std::alloc::Layout;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::ops::Add;
+use std::ptr::NonNull;
+
+use crate::defer;
+use crate::id::Id;
+use crate::table::ComponentIndex::{Data, Tag};
+use crate::util::aligned_buf::ABuf;
+use crate::util::itertools::IterTools;
+use crate::{Entity, component::{ComponentId, ComponentInfo}, sparse::SparseSet};
 
 /// 表 ID — 纯索引，不回收，无需分代。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -26,25 +32,34 @@ impl Id for TableId {
 
 struct Column {
     component_id: ComponentId,
-    stride: usize,
     component_size: usize,
-    type_info: Arc<ComponentTypeInfo>,
-    data: Vec<u8>,
+    stride: usize,
+    default_fn: Option<fn(*mut u8)>,
+    drop_fn: Option<fn(*mut u8)>,
+    data: ABuf<>,
 }
 
 impl Column {
 
-    fn new(component_id: ComponentId) -> Self {
-        let info = get_component_type_info(component_id)
-            .expect("Column::new: component not registered");
-
+    fn new(component: &ComponentInfo) -> Self {
+        let size = component.size;
+        let align = component.alignment;
         Self {
-            component_id, 
-            stride: info.size & !(info.alignment - 1),
-            component_size: info.size,
-            type_info: info,
-            data: Vec::new(),
+            component_id: component.id,
+            component_size: size,
+            stride: (size + align - 1) & !(align - 1),
+            default_fn: component.default_fn,
+            drop_fn: component.drop_fn,
+            data: ABuf::new_with_align(align),
         }
+    }
+
+    fn get_component_id(&self) -> ComponentId {
+        self.component_id
+    }
+
+    fn get_component_align(&self) -> usize {
+        self.data.align()
     }
 
     /// 将组件字节追加到此列末尾。
@@ -59,7 +74,19 @@ impl Column {
             self.component_size,
             component.len(),
         );
+        unsafe { self.push_unchecked(component) }
+    }
+
+    /// 将组件字节追加到此列末尾。
+    ///
+    /// # Safety
+    /// 需要 `component.len() == self.component_size`
+    unsafe fn push_unchecked(&mut self, component: &[u8]) {
         self.data.extend_from_slice(component);
+        let pad = self.stride - self.component_size;
+        if pad > 0 {
+            self.data.resize(self.data.len() + pad, 0);
+        }
     }
 
     /// 返回当前列中的组件数量。
@@ -71,24 +98,72 @@ impl Column {
     /// 获取第 `index` 个组件的字节切片。
     fn get(&self, index: usize) -> Option<&[u8]> {
         let offset = index.checked_mul(self.stride)?;
-        self.data.get(offset..offset + self.component_size)
+        self.data.as_slice().get(offset..offset + self.component_size)
     }
 
     /// 追加一个默认初始化的组件。
     fn push_default(&mut self) {
-        match &self.type_info.default_value {
-            None => {
-                let old_len = self.data.len();
-                self.data.resize(old_len + self.stride, 0);
-            }
-            Some(d) => {
-                self.data.extend_from_slice(d);
-            }
+        let old_len = self.data.len();
+        self.data.resize(old_len + self.stride, 0);
+        if let Some(f) = self.default_fn {
+            unsafe { f(self.data.as_mut_ptr().add(old_len)); }
         }
     }
 
+    /// 交换删除第 `row` 行的组件。与末行交换后截断，O(1)。
+    ///
+    /// 若 `out_buf` 为 `Some`，组件字节被拷贝到缓冲区而非析构；
+    /// 缓冲区长度必须 ≥ `self.component_size`，否则 panic。
+    /// 若 `out_buf` 为 `None` 且组件有 `drop_fn`，则调用析构；
+    /// `!Drop` 类型无析构，直接覆盖。
+    ///
+    /// # Panics
+    /// - `row` 越界
+    /// - `out_buf` 长度不足
+    fn swap_remove(&mut self, row: usize, out_buf: Option<&mut [u8]>) {
+        assert!(row < self.len(), "Column::swap_remove: row {row} out of bounds");
+
+        let last = self.len() - 1;
+        let removed_offset = row * self.stride;
+        let last_offset = last * self.stride;
+
+        if row != last {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    self.data.as_ptr().add(last_offset),
+                    self.data.as_mut_ptr().add(removed_offset),
+                    self.stride,
+                );
+            }
+        }
+
+        // Handle the last element (now moved to `row` if row != last)
+        match out_buf {
+            Some(buf) => {
+                assert!(
+                    buf.len() >= self.component_size,
+                    "Column::swap_remove: out_buf too small (need {}, got {})",
+                    self.component_size,
+                    buf.len(),
+                );
+                buf[..self.component_size].copy_from_slice(
+                    &self.data.as_slice()[last_offset..][..self.component_size],
+                );
+            }
+            None => {
+                if let Some(f) = self.drop_fn {
+                    unsafe { f(self.data.as_mut_ptr().add(last_offset)); }
+                }
+                // !Drop 类型：位模式平凡，直接覆盖无副作用
+            }
+        };
+
+        // SAFETY: last_offset is a valid stride boundary (verified by len() invariant)
+        unsafe { self.data.set_len(last_offset); }
+    }
+
     /// 遍历原始指针
-    fn raw_iter(&self) -> impl Iterator<Item = *const ()> {
+    fn raw_iter(&self) -> impl Iterator<Item = *const ()> + '_ {
         let base = self.data.as_ptr();
         let stride = self.stride;
         let len = self.len();
@@ -96,7 +171,7 @@ impl Column {
     }
 
     /// 遍历原始指针
-    fn raw_iter_mut(&mut self) -> impl Iterator<Item = *mut ()> {
+    fn raw_iter_mut(&mut self) -> impl Iterator<Item = *mut ()> + '_ {
         let base = self.data.as_mut_ptr();
         let stride = self.stride;
         let len = self.len();
@@ -110,11 +185,11 @@ pub struct NonMaxIndex(NonZeroUsize);
 impl NonMaxIndex {
     /// `usize::MAX` → `None`（标记组件）；其他值 → `Some(Self)`（数据列）。
     pub fn new(n: usize) -> Option<Self> {
-        // !usize::MAX == 0，NonZeroUsize 拒绝 0，产生 None
+        // usize::MAX ^ usize::MAX == 0，NonZeroUsize 拒绝 0，产生 None
         NonZeroUsize::new(n ^ usize::MAX).map(Self)
     }
 
-    /// 还原原始列索引（保证 ≠ `usize::MAX`）。
+    /// 还原原始列索引。
     pub fn get(self) -> usize {
         self.0.get() ^ usize::MAX
     }
@@ -132,31 +207,36 @@ pub enum ComponentIndex {
     Tag
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TableErr {
+    DuplicateComponent,
+    ComponentSizeMismatch(ComponentId),
+    ComponentNotInTable(ComponentId),
+}
+
 pub struct Table {
     id: TableId,
     entities: Vec<Entity>,
-    components_info: HashMap<ComponentId, ComponentIndex>, // Component -> Column Index
+    components_info: SparseSet<ComponentId, ComponentIndex>, // Component -> Column Index
     columns: Box<[Column]>,
 }
 
 impl Table {
 
-    pub fn new(id: TableId, components: &[ComponentId]) -> Self {
+    pub fn new(id: TableId, components: &[ComponentInfo]) -> Self {
 
         let mut components = components.to_owned();
-        components.sort();
+        components.sort_by(|l, r| l.id.cmp(&r.id) );
 
-        let mut components_info = HashMap::with_capacity(components.len());
+        let mut components_info = SparseSet::with_capacity(components.len());
 
         // 默认全部标记为 Tag（ZST / 不存在数据列）
-        components.iter().for_each(|&cid| { components_info.insert(cid, ComponentIndex::Tag); });
+        components.iter().for_each(|comp| { components_info.insert(comp.id, ComponentIndex::Tag); });
 
         let columns: Box<[Column]> = components
             .iter()
-            .filter(|&&cid| get_component_type_info(cid)
-                    .map_or(false, |info| info.size != 0)
-            )
-            .map(|&cid| Column::new(cid))
+            .filter(|&comp| comp.size != 0)
+            .map(|comp| Column::new(comp))
             .collect();
 
         // 覆盖：存在数据列的组件 → Data(idx)
@@ -167,7 +247,7 @@ impl Table {
 
         Self {
             id,
-            entities: Vec::new(), 
+            entities: Vec::new(),
             components_info,
             columns,
         }
@@ -185,31 +265,60 @@ impl Table {
         components.iter().all(|&component| !self.with_component(component))
     }
 
-    /// 向 Table 追加一个实体及其组件数据。
-    ///
-    /// `components[i]` 对应 `columns[i]`：
-    /// - `Some(bytes)` → 直接写入 bytes
-    /// - `None` → 使用该列的默认值填充
-    ///
-    /// # Panics
-    /// 当 `components.len() != self.columns.len()` 时 panic。
-    pub fn push(&mut self, entity: Entity, components: &[Option<&[u8]>]) {
-        assert_eq!(
-            components.len(),
-            self.columns.len(),
-            "Table::push: expected {} components, got {}",
-            self.columns.len(),
-            components.len(),
-        );
-
-        for (col, comp) in self.columns.iter_mut().zip(components.iter()) {
-            match comp {
-                Some(bytes) => col.push(bytes),
-                None => col.push_default(),
+    /// 向 Table 追加一个新实体及其组件数据。
+    /// 返回行号或错误
+    pub fn push(&mut self, entity: Entity, components: &[(ComponentId, &[u8])]) -> Result<usize, TableErr> {
+        for (i, &(component_id, bytes)) in components.iter().enumerate() {
+            if components[..i].iter().any(|&(prev, _)| prev == component_id) {
+                return Err(TableErr::DuplicateComponent);
+            }
+            match self.get_component_index(component_id) {
+                Some(ComponentIndex::Data(index)) => {
+                    let column = &self.columns[index.get()];
+                    if bytes.len() != column.component_size {
+                        return Err(TableErr::ComponentSizeMismatch(component_id))
+                    }
+                }
+                Some(ComponentIndex::Tag) => {}
+                None => return Err(TableErr::ComponentNotInTable(component_id)),
             }
         }
 
+        Ok(unsafe { self.push_unchecked(entity, components) })
+    }
+
+    /// 向 Table 追加一个新实体及其组件数据。
+    /// 返回行号
+    /// 
+    /// # Safety
+    /// `components`不含重复组件，不含不属于该 `Table` 的组件，组件数据的大小正确
+    pub unsafe fn push_unchecked(&mut self, entity: Entity, components: &[(ComponentId, &[u8])]) -> usize {
+        let row = self.entities.len();
+
+        components.iter().for_each(
+            |&(cid, bytes)| {
+                match self.get_component_index(cid) {
+                    Some(Data(idx)) => {
+                        debug_assert_eq!(self.columns[idx.get()].len(), row, "Table::push: invariant broken");
+                        self.columns[idx.get()].push(bytes);
+                    },
+                    Some(ComponentIndex::Tag) => {},
+                    None => unreachable!(),
+                }
+            }
+        );
+
+        self.columns.iter_mut().for_each(|col| {
+            if col.len() == row {
+                col.push_default();
+            } else {
+                debug_assert_eq!(col.len(), row + 1, "Table::push: invariant broken");
+            }
+        });
+
         self.entities.push(entity);
+
+        row
     }
 
     /// 查询组件在 Table 中的列索引。
@@ -219,6 +328,18 @@ impl Table {
     /// - `Some(ComponentIndex::Data(idx))` → 数据列，用 `idx.get()` 索引 `self.columns`
     pub fn get_component_index(&self, component: ComponentId) -> Option<ComponentIndex> {
         self.components_info.get(&component).copied()
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    pub fn swap_remove(&mut self, row: usize, out_bufs: &mut [Option<&mut [u8]>]) {
+        self.columns.iter_mut()
+            .zip_left(out_bufs.iter_mut())
+            .for_each(|(col, buf_slot)| {
+                col.swap_remove(row, buf_slot.and_then(|t| t.take()));
+            });
     }
 
     /// 同时遍历多个数据列。用于 ECS system 的批量组件访问。

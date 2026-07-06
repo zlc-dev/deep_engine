@@ -2,7 +2,8 @@ use std::hash::{Hash, Hasher};
 use std::collections::HashMap;
 use smallvec::SmallVec;
 
-use crate::id::{IdAllocator, DefaultIdAllocator};
+use crate::component::ComponentInfo;
+use crate::id::{AtomicAllocIdPool, DefaultIdAllocator, IdAllocator};
 use crate::{Entity, component::ComponentId, sparse::{GenSparseSet, SparseSet}, table::{Table, TableId}};
 
 struct EntityRecord {
@@ -89,6 +90,7 @@ impl Hash for TableType {
     }
 }
 
+// 负责维护 Entity -> Components 的存储
 pub struct Store {
     entity_index: GenSparseSet<Entity, EntityRecord>,
     table_id_alloc: DefaultIdAllocator<TableId>,
@@ -110,14 +112,14 @@ impl Store {
         }
     }
 
-    pub fn insert_entity(&mut self, entity: Entity) {
+    pub fn insert_entity(&mut self, entity: Entity, components: &[ComponentId]) {
 
     }
 
     /// 获取或创建与给定组件集合匹配的 Table，返回其 `TableId`。
-    pub fn create_table(&mut self, components: &[ComponentId]) -> TableId {
+    fn create_table(&mut self, components: &[ComponentInfo]) -> TableId {
         // 已存在则直接返回。
-        let table_type = TableType::from_iter(components.iter().cloned());
+        let table_type = TableType::from_iter(components.iter().map(|c| c.id));
         if let Some(&tid) = self.table_map.get(&table_type) {
             return tid;
         }
@@ -126,9 +128,9 @@ impl Store {
         self.tables.insert(tid, Box::new(Table::new(tid, components)));
         self.table_map.insert(table_type, tid);
         components.iter().for_each(
-            |&cid| {
+            |c| {
                 self.component_tables
-                    .entry(cid)
+                    .entry(c.id)
                     .or_insert_with(|| SmallVec::new())
                     .push(tid);
             }

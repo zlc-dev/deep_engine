@@ -1,7 +1,10 @@
 use std::hash::Hash;
 use std::sync::atomic::Ordering;
 
-use crate::{sparse::{SparseArray, SparseDefault}, util::spmc_atomic_queue::SpmcAtomicQueue};
+use crate::{
+    sparse::{SparseArray, SparseDefault},
+    util::spmc_atomic_queue::SpmcAtomicQueue,
+};
 
 pub trait IsUnsignedInteger: Clone + Copy + PartialEq + Eq + PartialOrd + Ord + Hash {
     const ZERO: Self;
@@ -57,8 +60,12 @@ macro_rules! impl_atomic_integer {
     ($int:ty => $atomic:ty) => {
         impl AtomicInteger for $int {
             type Atomic = $atomic;
-            fn atomic_new(val: Self) -> Self::Atomic { <$atomic>::new(val) }
-            fn atomic_load(atomic: &Self::Atomic, order: Ordering) -> Self { atomic.load(order) }
+            fn atomic_new(val: Self) -> Self::Atomic {
+                <$atomic>::new(val)
+            }
+            fn atomic_load(atomic: &Self::Atomic, order: Ordering) -> Self {
+                atomic.load(order)
+            }
             fn atomic_fetch_add(atomic: &Self::Atomic, val: Self, order: Ordering) -> Self {
                 atomic.fetch_add(val, order)
             }
@@ -72,11 +79,8 @@ impl_atomic_integer!(u32  => std::sync::atomic::AtomicU32);
 impl_atomic_integer!(u64  => std::sync::atomic::AtomicU64);
 impl_atomic_integer!(usize => std::sync::atomic::AtomicUsize);
 
-
 // 普通ID
-pub trait Id: 
-    Clone + Copy + PartialEq + Eq + Hash + From<Self::Inner> + Into<Self::Inner> 
-{
+pub trait Id: Clone + Copy + PartialEq + Eq + Hash + From<Self::Inner> + Into<Self::Inner> {
     type Inner: IsUnsignedInteger;
 
     fn new(id: Self::Inner) -> Self {
@@ -100,7 +104,6 @@ pub trait GenId: Id {
     fn get_gen(&self) -> Self::Generation;
 }
 
-
 pub trait IdAllocator {
     type IdType: Id;
 
@@ -123,19 +126,15 @@ pub trait IdPool: IdAllocator<IdType: GenId> {
     fn deallocate(&mut self, id: Self::IdType) -> Result<(), IdPoolError>;
 }
 
-
 pub trait AtomicIdPool: IdPool {
     fn deallocate_atomic(&self, id: Self::IdType) -> Result<(), IdPoolError>;
 }
-
 
 pub struct DefaultIdAllocator<T: Id> {
     next_id: T::Inner,
 }
 
-impl<T: Id> DefaultIdAllocator<T>
-{
-
+impl<T: Id> DefaultIdAllocator<T> {
     pub fn new() -> Self {
         Self {
             next_id: T::Inner::ZERO,
@@ -163,9 +162,9 @@ impl<T: Id> Default for DefaultIdAllocator<T> {
     }
 }
 
-
 pub struct DefaultIdPool<T: GenId, A = DefaultIdAllocator<<T as GenId>::Index>>
-    where A: IdAllocator<IdType = T::Index>
+where
+    A: IdAllocator<IdType = T::Index>,
 {
     index_allocator: A,
     free_list: Vec<T::Index>,
@@ -173,14 +172,16 @@ pub struct DefaultIdPool<T: GenId, A = DefaultIdAllocator<<T as GenId>::Index>>
     generations: SparseArray<T::Generation, Self>,
 }
 
-impl<T: GenId, A> SparseDefault<T::Generation> for DefaultIdPool<T, A> 
-    where A: IdAllocator<IdType = T::Index>
+impl<T: GenId, A> SparseDefault<T::Generation> for DefaultIdPool<T, A>
+where
+    A: IdAllocator<IdType = T::Index>,
 {
     const SPARSE_VALUE: T::Generation = T::Generation::ZERO;
 }
 
-impl<T: GenId, A> DefaultIdPool<T, A> 
-    where A: IdAllocator<IdType = T::Index>
+impl<T: GenId, A> DefaultIdPool<T, A>
+where
+    A: IdAllocator<IdType = T::Index>,
 {
     pub fn new_with_alloc(alloc: A) -> Self {
         Self {
@@ -191,8 +192,9 @@ impl<T: GenId, A> DefaultIdPool<T, A>
     }
 }
 
-impl<T: GenId, A> DefaultIdPool<T, A> 
-    where A: IdAllocator<IdType = T::Index> + Default
+impl<T: GenId, A> DefaultIdPool<T, A>
+where
+    A: IdAllocator<IdType = T::Index> + Default,
 {
     pub fn new() -> Self {
         Self {
@@ -204,7 +206,8 @@ impl<T: GenId, A> DefaultIdPool<T, A>
 }
 
 impl<T: GenId, A> IdAllocator for DefaultIdPool<T, A>
-    where A: IdAllocator<IdType = T::Index>
+where
+    A: IdAllocator<IdType = T::Index>,
 {
     type IdType = T;
 
@@ -228,7 +231,8 @@ impl<T: GenId, A> IdAllocator for DefaultIdPool<T, A>
 }
 
 impl<T: GenId, A> IdPool for DefaultIdPool<T, A>
-    where A: IdAllocator<IdType = T::Index>
+where
+    A: IdAllocator<IdType = T::Index>,
 {
     fn deallocate(&mut self, id: Self::IdType) -> Result<(), IdPoolError> {
         let index = id.get_index();
@@ -240,31 +244,33 @@ impl<T: GenId, A> IdPool for DefaultIdPool<T, A>
         if stored != id.get_gen() {
             return Err(IdPoolError::AlreadyDeallocated);
         }
-        self.generations.set(idx, id.get_gen().wrapping_add(T::Generation::ONE));
+        self.generations
+            .set(idx, id.get_gen().wrapping_add(T::Generation::ONE));
         self.free_list.push(index);
         Ok(())
     }
 }
 
-impl<T: GenId, A> Default for DefaultIdPool<T, A> 
-    where A: IdAllocator<IdType = T::Index> + Default
+impl<T: GenId, A> Default for DefaultIdPool<T, A>
+where
+    A: IdAllocator<IdType = T::Index> + Default,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub struct DefaultAtomicIdAllocator<T: Id> 
-    where T::Inner: AtomicInteger
+pub struct DefaultAtomicIdAllocator<T: Id>
+where
+    T::Inner: AtomicInteger,
 {
     next_id: <T::Inner as AtomicInteger>::Atomic,
 }
 
-
 impl<T: Id> DefaultAtomicIdAllocator<T>
-    where T::Inner: AtomicInteger
+where
+    T::Inner: AtomicInteger,
 {
-
     pub fn new() -> Self {
         Self {
             next_id: T::Inner::atomic_zero(),
@@ -272,8 +278,9 @@ impl<T: Id> DefaultAtomicIdAllocator<T>
     }
 }
 
-impl<T: Id> IdAllocator for DefaultAtomicIdAllocator<T> 
-    where T::Inner: AtomicInteger
+impl<T: Id> IdAllocator for DefaultAtomicIdAllocator<T>
+where
+    T::Inner: AtomicInteger,
 {
     type IdType = T;
 
@@ -282,27 +289,23 @@ impl<T: Id> IdAllocator for DefaultAtomicIdAllocator<T>
     }
 
     fn is_valid(&self, id: Self::IdType) -> bool {
-        let next_id = <T::Inner as AtomicInteger>::atomic_load(
-            &self.next_id, Ordering::Relaxed);
+        let next_id = <T::Inner as AtomicInteger>::atomic_load(&self.next_id, Ordering::Relaxed);
         <T::Inner as Ord>::cmp(&id.into(), &next_id.into()).is_lt()
     }
 }
 
-impl<T: Id> AtomicIdAllocator for DefaultAtomicIdAllocator<T> 
-    where T::Inner: AtomicInteger
+impl<T: Id> AtomicIdAllocator for DefaultAtomicIdAllocator<T>
+where
+    T::Inner: AtomicInteger,
 {
     fn allocate_atomic(&self) -> Self::IdType {
-        T::Inner::atomic_fetch_add(
-            &self.next_id,
-            T::Inner::ONE,
-            Ordering::Relaxed,
-        )
-        .into()
+        T::Inner::atomic_fetch_add(&self.next_id, T::Inner::ONE, Ordering::Relaxed).into()
     }
 }
 
-impl<T: Id> Default for DefaultAtomicIdAllocator<T> 
-    where T::Inner: AtomicInteger
+impl<T: Id> Default for DefaultAtomicIdAllocator<T>
+where
+    T::Inner: AtomicInteger,
 {
     fn default() -> Self {
         Self::new()
@@ -310,29 +313,28 @@ impl<T: Id> Default for DefaultAtomicIdAllocator<T>
 }
 
 /// 原子分配 + 串行回收的 ID 池。
-pub struct AtomicAllocIdPool<
-    T: GenId, 
-    A = DefaultAtomicIdAllocator<<T as GenId>::Index>
->
-    where T::Index: AtomicInteger,
-        A: AtomicIdAllocator<IdType = T::Index>
+pub struct AtomicAllocIdPool<T: GenId, A = DefaultAtomicIdAllocator<<T as GenId>::Index>>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index>,
 {
     index_allocator: A,
     free_list: SpmcAtomicQueue<T::Index>,
     generations: SparseArray<T::Generation, Self>,
 }
 
-
-impl<T: GenId, A> SparseDefault<T::Generation> for AtomicAllocIdPool<T, A> 
-    where T::Index: AtomicInteger, 
-        A: AtomicIdAllocator<IdType = T::Index>
+impl<T: GenId, A> SparseDefault<T::Generation> for AtomicAllocIdPool<T, A>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index>,
 {
     const SPARSE_VALUE: T::Generation = T::Generation::ZERO;
 }
 
-impl<T: GenId, A> AtomicAllocIdPool<T, A> 
-    where T::Index: AtomicInteger, 
-        A: AtomicIdAllocator<IdType = T::Index>
+impl<T: GenId, A> AtomicAllocIdPool<T, A>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index>,
 {
     pub fn new_with_alloc(alloc: A) -> Self {
         Self {
@@ -343,9 +345,10 @@ impl<T: GenId, A> AtomicAllocIdPool<T, A>
     }
 }
 
-impl<T: GenId, A> AtomicAllocIdPool<T, A> 
-    where T::Index: AtomicInteger, 
-        A: AtomicIdAllocator<IdType = T::Index> + Default
+impl<T: GenId, A> AtomicAllocIdPool<T, A>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index> + Default,
 {
     pub fn new() -> Self {
         Self {
@@ -356,9 +359,10 @@ impl<T: GenId, A> AtomicAllocIdPool<T, A>
     }
 }
 
-impl<T: GenId, A> IdAllocator for AtomicAllocIdPool<T, A> 
-    where T::Index: AtomicInteger,
-        A: AtomicIdAllocator<IdType = T::Index>
+impl<T: GenId, A> IdAllocator for AtomicAllocIdPool<T, A>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index>,
 {
     type IdType = T;
 
@@ -381,9 +385,10 @@ impl<T: GenId, A> IdAllocator for AtomicAllocIdPool<T, A>
     }
 }
 
-impl<T: GenId, A> AtomicIdAllocator for AtomicAllocIdPool<T, A> 
-    where T::Index: AtomicInteger,
-        A: AtomicIdAllocator<IdType = T::Index>
+impl<T: GenId, A> AtomicIdAllocator for AtomicAllocIdPool<T, A>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index>,
 {
     fn allocate_atomic(&self) -> Self::IdType {
         if let Some(index) = self.free_list.pop() {
@@ -396,9 +401,10 @@ impl<T: GenId, A> AtomicIdAllocator for AtomicAllocIdPool<T, A>
     }
 }
 
-impl<T: GenId, A> IdPool for AtomicAllocIdPool<T, A> 
-    where T::Index: AtomicInteger,
-        A: AtomicIdAllocator<IdType = T::Index>
+impl<T: GenId, A> IdPool for AtomicAllocIdPool<T, A>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index>,
 {
     fn deallocate(&mut self, id: Self::IdType) -> Result<(), IdPoolError> {
         let index = id.get_index();
@@ -410,15 +416,17 @@ impl<T: GenId, A> IdPool for AtomicAllocIdPool<T, A>
         if stored != id.get_gen() {
             return Err(IdPoolError::AlreadyDeallocated);
         }
-        self.generations.set(idx, id.get_gen().wrapping_add(T::Generation::ONE));
+        self.generations
+            .set(idx, id.get_gen().wrapping_add(T::Generation::ONE));
         self.free_list.push(index);
         Ok(())
     }
 }
 
-impl<T: GenId, A> Default for AtomicAllocIdPool<T, A> 
-    where T::Index: AtomicInteger,
-        A: AtomicIdAllocator<IdType = T::Index> + Default
+impl<T: GenId, A> Default for AtomicAllocIdPool<T, A>
+where
+    T::Index: AtomicInteger,
+    A: AtomicIdAllocator<IdType = T::Index> + Default,
 {
     fn default() -> Self {
         Self::new()

@@ -3,12 +3,16 @@ use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::ptr::NonNull;
 
-use crate::defer;
+use crate::component;
 use crate::id::Id;
 use crate::table::ComponentIndex::{Data, Tag};
 use crate::util::aligned_buf::ABuf;
 use crate::util::itertools::IterTools;
-use crate::{Entity, component::{ComponentId, ComponentInfo}, sparse::SparseSet};
+use crate::{
+    Entity,
+    component::{ComponentId, ComponentInfo},
+    sparse::SparseSet,
+};
 
 /// 表 ID — 纯索引，不回收，无需分代。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -36,11 +40,10 @@ struct Column {
     stride: usize,
     default_fn: Option<fn(*mut u8)>,
     drop_fn: Option<fn(*mut u8)>,
-    data: ABuf<>,
+    data: ABuf,
 }
 
 impl Column {
-
     fn new(component: &ComponentInfo) -> Self {
         let size = component.size;
         let align = component.alignment;
@@ -98,7 +101,9 @@ impl Column {
     /// 获取第 `index` 个组件的字节切片。
     fn get(&self, index: usize) -> Option<&[u8]> {
         let offset = index.checked_mul(self.stride)?;
-        self.data.as_slice().get(offset..offset + self.component_size)
+        self.data
+            .as_slice()
+            .get(offset..offset + self.component_size)
     }
 
     /// 追加一个默认初始化的组件。
@@ -106,7 +111,9 @@ impl Column {
         let old_len = self.data.len();
         self.data.resize(old_len + self.stride, 0);
         if let Some(f) = self.default_fn {
-            unsafe { f(self.data.as_mut_ptr().add(old_len)); }
+            unsafe {
+                f(self.data.as_mut_ptr().add(old_len));
+            }
         }
     }
 
@@ -121,7 +128,10 @@ impl Column {
     /// - `row` 越界
     /// - `out_buf` 长度不足
     fn swap_remove(&mut self, row: usize, out_buf: Option<&mut [u8]>) {
-        assert!(row < self.len(), "Column::swap_remove: row {row} out of bounds");
+        assert!(
+            row < self.len(),
+            "Column::swap_remove: row {row} out of bounds"
+        );
 
         let last = self.len() - 1;
         let removed_offset = row * self.stride;
@@ -146,20 +156,23 @@ impl Column {
                     self.component_size,
                     buf.len(),
                 );
-                buf[..self.component_size].copy_from_slice(
-                    &self.data.as_slice()[last_offset..][..self.component_size],
-                );
+                buf[..self.component_size]
+                    .copy_from_slice(&self.data.as_slice()[last_offset..][..self.component_size]);
             }
             None => {
                 if let Some(f) = self.drop_fn {
-                    unsafe { f(self.data.as_mut_ptr().add(last_offset)); }
+                    unsafe {
+                        f(self.data.as_mut_ptr().add(last_offset));
+                    }
                 }
                 // !Drop 类型：位模式平凡，直接覆盖无副作用
             }
         };
 
         // SAFETY: last_offset is a valid stride boundary (verified by len() invariant)
-        unsafe { self.data.set_len(last_offset); }
+        unsafe {
+            self.data.set_len(last_offset);
+        }
     }
 
     /// 遍历原始指针
@@ -204,7 +217,7 @@ impl From<NonMaxIndex> for usize {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ComponentIndex {
     Data(NonMaxIndex),
-    Tag
+    Tag,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -222,16 +235,16 @@ pub struct Table {
 }
 
 impl Table {
-
-    pub fn new(id: TableId, components: &[ComponentInfo]) -> Self {
-
+    pub fn new(id: TableId, components: &[&ComponentInfo]) -> Self {
         let mut components = components.to_owned();
-        components.sort_by(|l, r| l.id.cmp(&r.id) );
+        components.sort_by(|l, r| l.id.cmp(&r.id));
 
         let mut components_info = SparseSet::with_capacity(components.len());
 
         // 默认全部标记为 Tag（ZST / 不存在数据列）
-        components.iter().for_each(|comp| { components_info.insert(comp.id, ComponentIndex::Tag); });
+        components.iter().for_each(|comp| {
+            components_info.insert(comp.id, ComponentIndex::Tag);
+        });
 
         let columns: Box<[Column]> = components
             .iter()
@@ -242,7 +255,10 @@ impl Table {
         // 覆盖：存在数据列的组件 → Data(idx)
         columns.iter().enumerate().for_each(|(i, c)| {
             // SAFETY: i < columns.len() ≤ components.len() < usize::MAX
-            components_info.insert(c.component_id, ComponentIndex::Data(NonMaxIndex::new(i).unwrap()));
+            components_info.insert(
+                c.component_id,
+                ComponentIndex::Data(NonMaxIndex::new(i).unwrap()),
+            );
         });
 
         Self {
@@ -258,29 +274,30 @@ impl Table {
     }
 
     pub fn with_components(&self, components: &[ComponentId]) -> bool {
-        components.iter().all(|&component| self.with_component(component))
+        components
+            .iter()
+            .all(|&component| self.with_component(component))
     }
 
     pub fn without_components(&self, components: &[ComponentId]) -> bool {
-        components.iter().all(|&component| !self.with_component(component))
+        components
+            .iter()
+            .all(|&component| !self.with_component(component))
     }
 
     /// 向 Table 追加一个新实体及其组件数据。
     /// 返回行号或错误
-    pub fn push(&mut self, entity: Entity, components: &[(ComponentId, &[u8])]) -> Result<usize, TableErr> {
-        for (i, &(component_id, bytes)) in components.iter().enumerate() {
-            if components[..i].iter().any(|&(prev, _)| prev == component_id) {
-                return Err(TableErr::DuplicateComponent);
-            }
-            match self.get_component_index(component_id) {
-                Some(ComponentIndex::Data(index)) => {
-                    let column = &self.columns[index.get()];
-                    if bytes.len() != column.component_size {
-                        return Err(TableErr::ComponentSizeMismatch(component_id))
-                    }
+    pub fn push(
+        &mut self,
+        entity: Entity,
+        components: &[Option<&[u8]>],
+    ) -> Result<usize, TableErr> {
+
+        for (col, &component) in self.columns.iter().zip(components.iter()) {
+            if let Some(component) = component {
+                if col.component_size != component.len() {
+                    return Err(TableErr::ComponentSizeMismatch(col.component_id));
                 }
-                Some(ComponentIndex::Tag) => {}
-                None => return Err(TableErr::ComponentNotInTable(component_id)),
             }
         }
 
@@ -289,32 +306,22 @@ impl Table {
 
     /// 向 Table 追加一个新实体及其组件数据。
     /// 返回行号
-    /// 
-    /// # Safety
-    /// `components`不含重复组件，不含不属于该 `Table` 的组件，组件数据的大小正确
-    pub unsafe fn push_unchecked(&mut self, entity: Entity, components: &[(ComponentId, &[u8])]) -> usize {
+    pub unsafe fn push_unchecked(
+        &mut self,
+        entity: Entity,
+        components: &[Option<&[u8]>],
+    ) -> usize {
         let row = self.entities.len();
 
-        components.iter().for_each(
-            |&(cid, bytes)| {
-                match self.get_component_index(cid) {
-                    Some(Data(idx)) => {
-                        debug_assert_eq!(self.columns[idx.get()].len(), row, "Table::push: invariant broken");
-                        self.columns[idx.get()].push(bytes);
-                    },
-                    Some(ComponentIndex::Tag) => {},
-                    None => unreachable!(),
+        self.columns.iter_mut()
+            .zip_left(components.iter())
+            .for_each(|(col, component)| {
+                if let Some(component) = component.and_then(|c| c.as_deref()) {
+                    col.push(component);
+                } else {
+                    col.push_default();
                 }
-            }
-        );
-
-        self.columns.iter_mut().for_each(|col| {
-            if col.len() == row {
-                col.push_default();
-            } else {
-                debug_assert_eq!(col.len(), row + 1, "Table::push: invariant broken");
-            }
-        });
+            });
 
         self.entities.push(entity);
 
@@ -335,10 +342,11 @@ impl Table {
     }
 
     pub fn swap_remove(&mut self, row: usize, out_bufs: &mut [Option<&mut [u8]>]) {
-        self.columns.iter_mut()
+        self.columns
+            .iter_mut()
             .zip_left(out_bufs.iter_mut())
             .for_each(|(col, buf_slot)| {
-                col.swap_remove(row, buf_slot.and_then(|t| t.take()));
+                col.swap_remove(row, buf_slot.and_then(|slot| slot.as_deref_mut()));
             });
     }
 
@@ -349,9 +357,7 @@ impl Table {
     ) -> Box<[impl Iterator<Item = *const ()>]> {
         indices
             .iter()
-            .map(move |&i| {
-                self.columns[i.get()].raw_iter()
-            })
+            .map(move |&i| self.columns[i.get()].raw_iter())
             .collect()
     }
 
@@ -375,5 +381,4 @@ impl Table {
             })
             .collect()
     }
-
 }

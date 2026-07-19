@@ -1,10 +1,10 @@
 pub mod entity;
 pub use entity::Entity;
-pub mod table;
+pub mod command;
 pub mod component;
+pub mod id;
+pub mod registry;
 pub mod sparse;
 pub mod store;
-pub mod id;
-pub mod command;
+pub mod table;
 pub mod util;
-pub mod registry;

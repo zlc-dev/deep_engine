@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use ecs::sparse::SparseSet;
 use std::collections::HashMap;
 
@@ -80,7 +80,9 @@ fn bench_get_miss(c: &mut Criterion) {
             b.iter(|| {
                 let mut hits = 0;
                 for i in size..size * 2 {
-                    if sparse.contains_key(&i) { hits += 1; }
+                    if sparse.contains_key(&i) {
+                        hits += 1;
+                    }
                 }
                 black_box(hits);
             });
@@ -89,7 +91,9 @@ fn bench_get_miss(c: &mut Criterion) {
             b.iter(|| {
                 let mut hits = 0;
                 for i in size..size * 2 {
-                    if hash.contains_key(&i) { hits += 1; }
+                    if hash.contains_key(&i) {
+                        hits += 1;
+                    }
                 }
                 black_box(hits);
             });
@@ -151,16 +155,24 @@ fn bench_remove(c: &mut Criterion) {
         g.bench_with_input(BenchmarkId::new("SparseSet", size), &size, |b, &size| {
             b.iter(|| {
                 let mut set: SparseSet<u32, u64> = SparseSet::with_capacity(size as usize);
-                for i in 0..size { set.insert(i, i as u64); }
-                for i in 0..size { black_box(set.remove(&i)); }
+                for i in 0..size {
+                    set.insert(i, i as u64);
+                }
+                for i in 0..size {
+                    black_box(set.remove(&i));
+                }
                 black_box(set);
             });
         });
         g.bench_with_input(BenchmarkId::new("HashMap", size), &size, |b, &size| {
             b.iter(|| {
                 let mut map = HashMap::with_capacity(size as usize);
-                for i in 0..size { map.insert(i, i as u64); }
-                for i in 0..size { black_box(map.remove(&i)); }
+                for i in 0..size {
+                    map.insert(i, i as u64);
+                }
+                for i in 0..size {
+                    black_box(map.remove(&i));
+                }
                 black_box(map);
             });
         });

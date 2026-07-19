@@ -1,10 +1,15 @@
-use std::hash::{Hash, Hasher};
-use std::collections::HashMap;
 use smallvec::SmallVec;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use crate::component::ComponentInfo;
 use crate::id::{AtomicAllocIdPool, DefaultIdAllocator, IdAllocator};
-use crate::{Entity, component::ComponentId, sparse::{GenSparseSet, SparseSet}, table::{Table, TableId}};
+use crate::{
+    Entity,
+    component::ComponentId,
+    sparse::{GenSparseSet, SparseSet},
+    table::{Table, TableId},
+};
 
 struct EntityRecord {
     id: Entity,
@@ -99,9 +104,7 @@ pub struct Store {
     component_tables: SparseSet<ComponentId, SmallVec<[TableId; 4]>>,
 }
 
-
 impl Store {
-
     pub fn new() -> Self {
         Self {
             entity_index: GenSparseSet::new(),
@@ -112,12 +115,10 @@ impl Store {
         }
     }
 
-    pub fn insert_entity(&mut self, entity: Entity, components: &[ComponentId]) {
-
-    }
+    pub fn insert_entity(&mut self, entity: Entity, components: &[ComponentId]) {}
 
     /// 获取或创建与给定组件集合匹配的 Table，返回其 `TableId`。
-    fn create_table(&mut self, components: &[ComponentInfo]) -> TableId {
+    fn create_table(&mut self, components: &[&ComponentInfo]) -> TableId {
         // 已存在则直接返回。
         let table_type = TableType::from_iter(components.iter().map(|c| c.id));
         if let Some(&tid) = self.table_map.get(&table_type) {
@@ -125,37 +126,41 @@ impl Store {
         }
 
         let tid = self.table_id_alloc.allocate();
-        self.tables.insert(tid, Box::new(Table::new(tid, components)));
+        self.tables
+            .insert(tid, Box::new(Table::new(tid, components)));
         self.table_map.insert(table_type, tid);
-        components.iter().for_each(
-            |c| {
-                self.component_tables
-                    .entry(c.id)
-                    .or_insert_with(|| SmallVec::new())
-                    .push(tid);
-            }
-        );
+        components.iter().for_each(|c| {
+            self.component_tables
+                .entry(c.id)
+                .or_insert_with(|| SmallVec::new())
+                .push(tid);
+        });
         tid
     }
 
     pub fn get_table(&self, components: &[ComponentId]) -> Option<TableId> {
-        self.table_map.get(&TableType::from_iter(components.iter().cloned())).cloned()
+        self.table_map
+            .get(&TableType::from_iter(components.iter().cloned()))
+            .cloned()
     }
 
     pub fn find_tables(&self, with: &[ComponentId], without: &[ComponentId]) -> Box<[TableId]> {
-
         // If no `with` components are specified, check all tables.
         if with.is_empty() {
-            return self.tables.keys().filter_map(|k| {
-                self.tables.get(&k).and_then(|table| {
-                    // Exclude tables that contain any `without` component.
-                    if table.without_components(without) {
-                        Some(k)
-                    } else {
-                        None
-                    }
+            return self
+                .tables
+                .keys()
+                .filter_map(|k| {
+                    self.tables.get(&k).and_then(|table| {
+                        // Exclude tables that contain any `without` component.
+                        if table.without_components(without) {
+                            Some(k)
+                        } else {
+                            None
+                        }
+                    })
                 })
-            }).collect();
+                .collect();
         }
 
         let mut smallest: &[TableId] = &self.component_tables[&with[0]];
@@ -167,14 +172,14 @@ impl Store {
             }
         }
 
-        let result = smallest.iter().filter(
-            |&&table_id| {
+        let result = smallest
+            .iter()
+            .filter(|&&table_id| {
                 let table = self.tables.get(&table_id).unwrap().as_ref();
                 table.with_components(with) && table.without_components(without)
-            }
-        )
-        .map(|&tid| tid)
-        .collect();
+            })
+            .map(|&tid| tid)
+            .collect();
 
         result
     }

@@ -27,9 +27,6 @@ pub trait Component: 'static {}
 impl<T: 'static> Component for T {}
 
 /// 组件类型的运行时元信息。
-///
-/// `default_value` 为 `None` 时，该组件不支持默认填零；
-/// 为 `Some(bytes)` 时，`bytes` 长度必须等于 `size`。
 #[derive(Clone)]
 pub struct ComponentInfo {
     pub id: ComponentId,
@@ -40,7 +37,6 @@ pub struct ComponentInfo {
 }
 
 impl ComponentInfo {
-
     pub fn new<T: Component>(id: ComponentId) -> Self {
         Self::new_dyn(
             id,
@@ -70,22 +66,20 @@ impl ComponentInfo {
     /// `default_value` 接受引用切片，内部自动拷贝到堆上。
     /// 传入 `None` 即为零初始化默认值。
     pub fn new_dyn(
-        id: ComponentId, 
-        size: usize, 
-        alignment: usize, 
+        id: ComponentId,
+        size: usize,
+        alignment: usize,
         default_fn: Option<fn(*mut u8)>,
         drop_fn: Option<fn(*mut u8)>,
     ) -> Self {
-        
         Self {
             id,
             size,
             alignment,
             default_fn,
-            drop_fn
+            drop_fn,
         }
     }
-
 }
 
 fn init_default_component<T: Component + Default>(ptr: *mut u8) {

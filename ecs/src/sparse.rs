@@ -2,7 +2,7 @@
 
 use std::{marker::PhantomData, mem::replace};
 
-use crate::id::{GenId, IsUnsignedInteger, Id};
+use crate::id::{GenId, Id, IsUnsignedInteger};
 
 struct AssertFitsUsize<U: IsUnsignedInteger>(PhantomData<U>);
 
@@ -23,7 +23,6 @@ pub trait SparseDefault<T: Copy> {
     const SPARSE_VALUE: T;
 }
 
-
 /// 分页的稀疏数组，按需分配页面。
 ///
 /// `index → (page, offset)` 其中 `page = index >> PAGE_SHIFT`, `offset = index & PAGE_MASK`。
@@ -36,9 +35,11 @@ pub struct SparseArray<T: Copy, D: SparseDefault<T>> {
 }
 
 impl<T: Copy, D: SparseDefault<T>> SparseArray<T, D> {
-
     pub fn new() -> Self {
-        Self { pages: Vec::new(), _marker: PhantomData }
+        Self {
+            pages: Vec::new(),
+            _marker: PhantomData,
+        }
     }
 
     /// 读取 `index` 处的值。页面不存在返回 `D::SPARSE_VALUE`。
@@ -61,9 +62,8 @@ impl<T: Copy, D: SparseDefault<T>> SparseArray<T, D> {
             self.pages.resize_with(page_idx + 1, || None);
         }
 
-        let page = self.pages[page_idx].get_or_insert_with(|| {
-            Box::new([D::SPARSE_VALUE; PAGE_SIZE])
-        });
+        let page =
+            self.pages[page_idx].get_or_insert_with(|| Box::new([D::SPARSE_VALUE; PAGE_SIZE]));
         page[offset] = value;
     }
 
@@ -79,8 +79,7 @@ impl<T: Copy, D: SparseDefault<T>> SparseArray<T, D> {
     }
 }
 
-
-impl<T: Copy + PartialEq, D: SparseDefault<T>> SparseArray<T, D>  {
+impl<T: Copy + PartialEq, D: SparseDefault<T>> SparseArray<T, D> {
     /// 检查 `index` 处的值是否是默认值
     #[inline]
     pub fn is_default(&self, index: usize) -> bool {
@@ -89,15 +88,15 @@ impl<T: Copy + PartialEq, D: SparseDefault<T>> SparseArray<T, D>  {
             return true;
         }
         let offset = index & PAGE_MASK;
-        D::SPARSE_VALUE == unsafe {
-            self.pages
-                .get_unchecked(page_idx)
-                .as_ref()
-                .unwrap_unchecked()[offset] 
-        }
+        D::SPARSE_VALUE
+            == unsafe {
+                self.pages
+                    .get_unchecked(page_idx)
+                    .as_ref()
+                    .unwrap_unchecked()[offset]
+            }
     }
 }
-
 
 /// 稀疏集：`usize → T` 的 O(1) 关联容器。
 ///
@@ -115,12 +114,11 @@ impl<K: Id, V> SparseDefault<usize> for SparseSet<K, V> {
 }
 
 impl<K: Id, V> SparseSet<K, V> {
-    
     #[inline]
     fn static_check() {
         AssertFitsUsize::<K::Inner>::OK
     }
-    
+
     pub fn new() -> Self {
         Self::static_check();
         Self {
@@ -353,7 +351,6 @@ impl<K: GenId, V> SparseDefault<usize> for GenSparseSet<K, V> {
 }
 
 impl<K: GenId, V> GenSparseSet<K, V> {
-    
     #[inline]
     fn static_check() {
         AssertFitsUsize::<K::Index>::OK
@@ -525,7 +522,8 @@ impl<K: GenId, V> GenSparseSet<K, V> {
     /// 清空所有元素，保留已分配内存。
     pub fn clear(&mut self) {
         for &entity in &self.keys {
-            self.sparse.set(entity.get_index().as_usize(), Self::SPARSE_VALUE);
+            self.sparse
+                .set(entity.get_index().as_usize(), Self::SPARSE_VALUE);
         }
         self.keys.clear();
         self.data.clear();
@@ -567,8 +565,6 @@ impl<K: GenId, V> std::ops::Index<&K> for GenSparseSet<K, V> {
         self.get(key).expect("GenerationSparseSet: key not found")
     }
 }
-
-
 
 // ── Entry API ────────────────────────────────────
 

@@ -1,6 +1,6 @@
 use std::sync::{LazyLock, Mutex};
 
-use crate::id::{GenId, IdAllocator, IdPool, IdPoolError, Id};
+use crate::id::{GenId, Id, IdAllocator, IdPool, IdPoolError};
 
 /// Lightweight entity identifier.
 ///
@@ -60,7 +60,6 @@ impl std::fmt::Display for Entity {
     }
 }
 
-
 impl From<Entity> for u64 {
     #[inline]
     fn from(e: Entity) -> u64 {
@@ -89,15 +88,15 @@ impl Id for Entity {
 impl GenId for Entity {
     type Index = u32;
     type Generation = u32;
-    
+
     fn new_with_gen(index: Self::Index, generation: Self::Generation) -> Self {
         Self { index, generation }
     }
-    
+
     fn get_index(&self) -> Self::Index {
         self.index
     }
-    
+
     fn get_gen(&self) -> Self::Generation {
         self.generation
     }

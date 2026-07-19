@@ -24,7 +24,8 @@ impl Alignment for usize {
 /// aligned buffer
 /// 支持自定义对齐的缓冲区
 pub struct ABuf<Align = usize>
-    where Align: Alignment
+where
+    Align: Alignment,
 {
     align: Align,
     cap: usize,
@@ -80,11 +81,14 @@ impl<Align: Alignment> ABuf<Align> {
 
     pub fn as_ptr(&self) -> *const u8 {
         self.buf
-            .map_or(NonNull::<u8>::dangling().as_ptr() as *const u8, |p| p.as_ptr() as *const u8)
+            .map_or(NonNull::<u8>::dangling().as_ptr() as *const u8, |p| {
+                p.as_ptr() as *const u8
+            })
     }
 
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.buf.map_or(NonNull::<u8>::dangling().as_ptr(), NonNull::as_ptr)
+        self.buf
+            .map_or(NonNull::<u8>::dangling().as_ptr(), NonNull::as_ptr)
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -172,14 +176,14 @@ impl<Align: Alignment> ABuf<Align> {
             None => unsafe { alloc::alloc(new_layout) },
         };
 
-        let new_ptr = NonNull::new(new_ptr).unwrap_or_else(|| alloc::handle_alloc_error(new_layout));
+        let new_ptr =
+            NonNull::new(new_ptr).unwrap_or_else(|| alloc::handle_alloc_error(new_layout));
         self.buf = Some(new_ptr);
         self.cap = new_cap;
     }
 
     fn layout(&self, size: usize) -> Layout {
-        Layout::from_size_align(size, self.align())
-            .expect("ABuf layout exceeds addressable memory")
+        Layout::from_size_align(size, self.align()).expect("ABuf layout exceeds addressable memory")
     }
 }
 
@@ -189,7 +193,9 @@ impl<Align: Alignment> Drop for ABuf<Align> {
             if self.cap == 0 {
                 return;
             }
-            unsafe { alloc::dealloc(ptr.as_ptr(), self.layout(self.cap)); }
+            unsafe {
+                alloc::dealloc(ptr.as_ptr(), self.layout(self.cap));
+            }
         }
     }
 }
@@ -234,5 +240,4 @@ mod tests {
         assert_eq!(buf.as_ptr() as usize % 32, 0);
         assert_eq!(buf.as_slice(), &[1, 2, 3, 4]);
     }
-
 }
